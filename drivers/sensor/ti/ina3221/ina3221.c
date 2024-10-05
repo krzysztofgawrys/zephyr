@@ -18,7 +18,7 @@
 
 LOG_MODULE_REGISTER(INA3221, CONFIG_SENSOR_LOG_LEVEL);
 
-#define MAX_RETRIES 10
+#define MAX_RETRIES 500
 
 static int reg_read(const struct device *dev, uint8_t reg_addr, uint16_t *reg_data)
 {
@@ -105,6 +105,8 @@ static int ina3221_init(const struct device *dev)
 		   (INA3221_CONFIG_CH2 * cfg->enable_channel[1]) |
 		   (INA3221_CONFIG_CH3 * cfg->enable_channel[2]);
 
+	reg_data |= INA3221_CONFIG_BUS | INA3221_CONFIG_SHUNT | INA3221_CONFIG_CONTINUOUS;
+
 	ret = reg_write(dev, INA3221_CONFIG, reg_data);
 	if (ret) {
 		return ret;
@@ -155,29 +157,29 @@ static int ina3221_sample_fetch(const struct device *dev, enum sensor_channel ch
 
 	/* Trigger measurement and wait for completion */
 	if (chan == SENSOR_CHAN_VOLTAGE) {
-		ret = start_measurement(dev, true, false);
-		if (ret) {
-			return ret;
-		}
-		measurement_time =
-			K_USEC(avg_mode_samples[cfg->avg_mode] *
-			       conv_time_us[cfg->conv_time_bus]);
+		// ret = start_measurement(dev, true, false);
+		// if (ret) {
+		// 	return ret;
+		// }
+		measurement_time = K_USEC(
+			(avg_mode_samples[cfg->avg_mode] * conv_time_us[cfg->conv_time_bus]) / 50);
 	} else if (chan == SENSOR_CHAN_CURRENT) {
-		ret = start_measurement(dev, false, true);
-		if (ret) {
-			return ret;
-		}
-		measurement_time =
-			K_USEC(avg_mode_samples[cfg->avg_mode] *
-			       conv_time_us[cfg->conv_time_shunt]);
+		// ret = start_measurement(dev, false, true);
+		// if (ret) {
+		// 	return ret;
+		// }
+		measurement_time = K_USEC(
+			(avg_mode_samples[cfg->avg_mode] * conv_time_us[cfg->conv_time_shunt]) /
+			50);
 	} else if (chan == SENSOR_CHAN_POWER || chan == SENSOR_CHAN_ALL) {
-		ret = start_measurement(dev, true, true);
-		if (ret) {
-			return ret;
-		}
+		// ret = start_measurement(dev, true, true);
+		// if (ret) {
+		// 	return ret;
+		// }
 		measurement_time =
-			K_USEC(avg_mode_samples[cfg->avg_mode] *
-			       conv_time_us[MAX(cfg->conv_time_shunt, cfg->conv_time_bus)]);
+			K_USEC((avg_mode_samples[cfg->avg_mode] *
+				conv_time_us[MAX(cfg->conv_time_shunt, cfg->conv_time_bus)]) /
+			       50);
 	} else {
 		return -ENOTSUP;
 	}
@@ -231,6 +233,9 @@ static int ina3221_channel_get(const struct device *dev, enum sensor_channel cha
 	case SENSOR_CHAN_VOLTAGE:
 		result = data->v_bus[data->selected_channel] * INA3221_BUS_VOLTAGE_LSB;
 		break;
+	case SENSOR_CHAN_VSHUNT:
+		result = data->v_shunt[data->selected_channel] * INA3221_SHUNT_VOLTAGE_LSB;
+		break;
 	case SENSOR_CHAN_CURRENT:
 		result = data->v_shunt[data->selected_channel] * INA3221_SHUNT_VOLTAGE_LSB /
 			 (cfg->shunt_r[data->selected_channel] / 1000.0f);
@@ -258,12 +263,53 @@ static int ina3221_attr_set(const struct device *dev, enum sensor_channel chan,
 	}
 
 	struct ina3221_data *data = dev->data;
+	struct ina3221_config *cfg = dev->config;
 
 	if (val->val1 < 1 || val->val1 > 3) {
 		return -EINVAL;
 	}
 
 	data->selected_channel = val->val1 - 1;
+
+	int ret;
+	uint16_t reg_data;
+
+	ret = reg_read(dev, INA3221_CONFIG, &reg_data);
+	if (ret) {
+		return ret;
+	}
+
+	switch (chan) {
+	case 3:
+		cfg->enable_channel[0] = false;
+		cfg->enable_channel[1] = false;
+		cfg->enable_channel[2] = true;
+		break;
+	case 2:
+		cfg->enable_channel[0] = false;
+		cfg->enable_channel[1] = true;
+		cfg->enable_channel[2] = false;
+		break;
+	case 1:
+		cfg->enable_channel[0] = true;
+		cfg->enable_channel[1] = false;
+		cfg->enable_channel[2] = false;
+		break;
+	}
+
+	reg_data = (cfg->conv_time_shunt << 3) | (cfg->conv_time_bus << 6) | (cfg->avg_mode << 9);
+
+	reg_data |= (INA3221_CONFIG_CH1 * cfg->enable_channel[0]) |
+		    (INA3221_CONFIG_CH2 * cfg->enable_channel[1]) |
+		    (INA3221_CONFIG_CH3 * cfg->enable_channel[2]);
+
+	reg_data |= INA3221_CONFIG_BUS | INA3221_CONFIG_SHUNT | INA3221_CONFIG_CONTINUOUS;
+
+	ret = reg_write(dev, INA3221_CONFIG, reg_data);
+	if (ret) {
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -274,7 +320,7 @@ static const struct sensor_driver_api ina3221_api = {
 };
 
 #define INST_DT_INA3221(index)                                                                     \
-	static const struct ina3221_config ina3221_config_##index = {                              \
+	static struct ina3221_config ina3221_config_##index = {                                    \
 		.bus = I2C_DT_SPEC_INST_GET(index),                                                \
 		.avg_mode = DT_INST_PROP(index, avg_mode),                                         \
 		.conv_time_bus = DT_INST_PROP(index, conv_time_bus),                               \
@@ -285,7 +331,7 @@ static const struct sensor_driver_api ina3221_api = {
 	static struct ina3221_data ina3221_data_##index;                                           \
                                                                                                    \
 	SENSOR_DEVICE_DT_INST_DEFINE(index, ina3221_init, NULL, &ina3221_data_##index,             \
-			      &ina3221_config_##index, POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY,   \
-			      &ina3221_api);
+				     &ina3221_config_##index, POST_KERNEL,                         \
+				     CONFIG_SENSOR_INIT_PRIORITY, &ina3221_api);
 
 DT_INST_FOREACH_STATUS_OKAY(INST_DT_INA3221);

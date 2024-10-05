@@ -89,6 +89,10 @@ config SOC_STM32L4R9XX
 	bool
 	select SOC_SERIES_STM32L4X
 
+config SOC_STM32L4S9XX
+	bool
+	select SOC_SERIES_STM32L4X
+
 config SOC
 	default "stm32l412xx" if SOC_STM32L412XX
 	default "stm32l422xx" if SOC_STM32L422XX
@@ -109,3 +113,4 @@ config SOC
 	default "stm32l4s5xx" if SOC_STM32L4S5XX
 	default "stm32l4r5xx" if SOC_STM32L4R5XX
 	default "stm32l4r9xx" if SOC_STM32L4R9XX
+	default "stm32l4s9xx" if SOC_STM32L4S9XX
