@@ -53,6 +53,10 @@ struct sdhc_stm32_data {
 	struct k_sem device_sync_sem;  /* Sync between device communication messages */
 	void *sdio_dma_buf;            /* DMA buffer for SDIO data transfer */
 	uint32_t total_transfer_bytes; /* number of bytes transferred */
+    sdhc_interrupt_cb_t callback;
+	void *callback_user_data;
+	bool sdio_irq_enabled;
+	bool sdio_irq_pending;
 };
 
 /*
@@ -623,6 +627,28 @@ static int sdhc_stm32_reset(const struct device *dev)
 	return res == HAL_OK ? 0 : -EIO;
 }
 
+static int sdhc_stm32_enable_interrupt(const struct device *dev,
+				    sdhc_interrupt_cb_t callback,
+				    int sources, void *user_data)
+{
+	const struct sdhc_stm32_config *config = dev->config;
+    struct sdhc_stm32_data *data = dev->data;
+
+    data->callback = callback;
+    data->callback_user_data = user_data;
+
+	config->hsd->Instance->MASK |= (uint32_t)sources;
+	return 0;
+}
+
+static int sdhc_stm32_disable_interrupt(const struct device *dev, int sources)
+{
+	const struct sdhc_stm32_config *config = dev->config;
+
+	config->hsd->Instance->MASK &= ~(uint32_t)sources;
+	return 0;
+}
+
 static DEVICE_API(sdhc, sdhc_stm32_api) = {
 	.request = sdhc_stm32_request,
 	.set_io = sdhc_stm32_set_io,
@@ -630,6 +656,8 @@ static DEVICE_API(sdhc, sdhc_stm32_api) = {
 	.get_card_present = sdhc_stm32_get_card_present,
 	.card_busy = sdhc_stm32_card_busy,
 	.reset = sdhc_stm32_reset,
+    .enable_interrupt = sdhc_stm32_enable_interrupt,
+	.disable_interrupt = sdhc_stm32_disable_interrupt,
 };
 
 void sdhc_stm32_event_isr(const struct device *dev)
@@ -637,6 +665,18 @@ void sdhc_stm32_event_isr(const struct device *dev)
 	uint32_t icr_clear_flag = 0;
 	struct sdhc_stm32_data *data = dev->data;
 	const struct sdhc_stm32_config *config = dev->config;
+
+    /* --- SDIO DAT1 interrupt (SDIOIT) --- */
+    if (config->hsd->Instance->STA & SDMMC_STA_SDIOIT) {
+        /* ACK as fast as possible */
+        config->hsd->Instance->ICR = SDMMC_ICR_SDIOITC;
+		config->hsd->Instance->MASK &= ~SDMMC_MASK_SDIOITIE;
+
+		if (data->sdio_irq_enabled && data->callback && !data->sdio_irq_pending) {
+			data->sdio_irq_pending = true;
+			data->callback(dev, SDMMC_STA_SDIOIT, data->callback_user_data);
+		}
+    }
 
 	if (__HAL_SDIO_GET_FLAG(config->hsd,
 				SDMMC_FLAG_DATAEND | SDMMC_FLAG_DCRCFAIL | SDMMC_FLAG_DTIMEOUT |
@@ -710,6 +750,10 @@ static int sdhc_stm32_init(const struct device *dev)
 	config->irq_config_func();
 	k_sem_init(&data->device_sync_sem, 0, K_SEM_MAX_LIMIT);
 	k_mutex_init(&data->bus_mutex);
+
+    /* Clear any stale SDIOIT and keep it masked by default */
+    config->hsd->Instance->ICR = SDMMC_ICR_SDIOITC;
+    config->hsd->Instance->MASK &= ~SDMMC_MASK_SDIOITIE;
 
 	return ret;
 }
