@@ -37,7 +37,7 @@ if(CONFIG_NRF70_BUSLIB)
   endif()
   zephyr_library_sources_ifdef(CONFIG_NRF70_ON_QSPI
     rpu_hw_if.c
-    qspi_if_qspi.c
+    qspi_if.c
   )
   zephyr_library_sources_ifdef(CONFIG_NRF70_ON_MSPI
     rpu_hw_if.c
