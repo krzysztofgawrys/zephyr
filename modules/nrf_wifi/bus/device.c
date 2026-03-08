@@ -19,28 +19,32 @@
 #include "spi_if.h"
 static struct qspi_config config;
 
-#if defined(CONFIG_NRF70_ON_QSPI)
+#if defined(CONFIG_NRF70_ON_QSPI) || defined(CONFIG_NRF70_ON_MSPI)
 static struct qspi_dev qspi = {.init = qspi_init,
-			       .deinit = qspi_deinit,
-			       .read = qspi_read,
-			       .write = qspi_write,
-			       .hl_read = qspi_hl_read};
+                               .deinit = qspi_deinit,
+                               .read = qspi_read,
+                               .write = qspi_write,
+                               .hl_read = qspi_hl_read};
 #else
 static struct qspi_dev spim = {.init = spim_init,
-			       .deinit = spim_deinit,
-			       .read = spim_read,
-			       .write = spim_write,
-			       .hl_read = spim_hl_read};
+                               .deinit = spim_deinit,
+                               .read = spim_read,
+                               .write = spim_write,
+                               .hl_read = spim_hl_read};
 #endif
 
 struct qspi_config *qspi_defconfig(void)
 {
 	memset(&config, 0, sizeof(struct qspi_config));
 #if defined(CONFIG_NRF70_ON_QSPI)
-	config.addrmode = NRF_QSPI_ADDRMODE_24BIT;
-	config.RDC4IO = 0xA0;
-	config.easydma = true;
-	config.quad_spi = true;
+        config.addrmode = NRF_QSPI_ADDRMODE_24BIT;
+        config.RDC4IO = 0xA0;
+        config.easydma = true;
+        config.quad_spi = true;
+#elif defined(CONFIG_NRF70_ON_MSPI)
+        config.RDC4IO = 0xA0;
+        config.easydma = false;
+        config.quad_spi = true;
 #endif
 	config.addrmask = 0x800000; /* set bit23 (incr. addr mode) */
 
@@ -73,9 +77,9 @@ struct qspi_config *qspi_get_config(void)
 
 struct qspi_dev *qspi_dev(void)
 {
-#if defined(CONFIG_NRF70_ON_QSPI)
-	return &qspi;
+#if defined(CONFIG_NRF70_ON_QSPI) || defined(CONFIG_NRF70_ON_MSPI)
+        return &qspi;
 #else
-	return &spim;
+        return &spim;
 #endif
 }

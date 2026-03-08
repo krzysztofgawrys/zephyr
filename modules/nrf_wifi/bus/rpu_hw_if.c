@@ -430,9 +430,11 @@ int rpu_write(unsigned int addr, const void *data, int len)
 int rpu_sleep(void)
 {
 #if CONFIG_NRF70_ON_QSPI
-	return qspi_cmd_sleep_rpu(&qspi_perip);
+        return qspi_cmd_sleep_rpu(&qspi_perip);
+#elif CONFIG_NRF70_ON_MSPI
+        return qspi_cmd_sleep_rpu(&qspi_perip);
 #else
-	return spim_cmd_sleep_rpu_fn();
+        return spim_cmd_sleep_rpu_fn();
 #endif
 }
 
@@ -491,33 +493,37 @@ void rpu_get_sleep_stats(uint32_t addr, uint32_t *buff, uint32_t wrd_len)
 
 int rpu_wrsr2(uint8_t data)
 {
-	int ret;
-
+        int ret;
 #if CONFIG_NRF70_ON_QSPI
-	ret = qspi_cmd_wakeup_rpu(&qspi_perip, data);
+        ret = qspi_cmd_wakeup_rpu(&qspi_perip, data);
+#elif CONFIG_NRF70_ON_MSPI
+        ret = qspi_cmd_wakeup_rpu(&qspi_perip, data);
 #else
-	ret = spim_cmd_rpu_wakeup_fn(data);
+        ret = spim_cmd_rpu_wakeup_fn(data);
 #endif
-
-	LOG_DBG("Written 0x%x to WRSR2", data);
-	return ret;
+        LOG_DBG("Written 0x%x to WRSR2", data);
+        return ret;
 }
 
 int rpu_rdsr2(void)
 {
 #if CONFIG_NRF70_ON_QSPI
-	return qspi_validate_rpu_wake_writecmd(&qspi_perip);
+        return qspi_validate_rpu_wake_writecmd(&qspi_perip);
+#elif CONFIG_NRF70_ON_MSPI
+        return qspi_validate_rpu_wake_writecmd(&qspi_perip);
 #else
-	return spi_validate_rpu_wake_writecmd();
+        return spi_validate_rpu_wake_writecmd();
 #endif
 }
 
 int rpu_rdsr1(void)
 {
 #if CONFIG_NRF70_ON_QSPI
-	return qspi_wait_while_rpu_awake(&qspi_perip);
+        return qspi_wait_while_rpu_awake(&qspi_perip);
+#elif CONFIG_NRF70_ON_MSPI
+        return qspi_wait_while_rpu_awake(&qspi_perip);
 #else
-	return spim_wait_while_rpu_awake();
+        return spim_wait_while_rpu_awake();
 #endif
 }
 

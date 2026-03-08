@@ -1,0 +1,29 @@
+# Copyright (c) 2024
+# SPDX-License-Identifier: Apache-2.0
+description: nRF7002 Wi-Fi chip on MSPI bus (MSPI OCTOSPI backend).
+
+compatible: "nordic,nrf7002-mspi"
+
+include:
+  - "nordic,nrf70.yaml"
+  - "wifi-tx-power-2g.yaml"
+  - "wifi-tx-power-5g.yaml"
+
+on-bus: mspi
+
+properties:
+  reg:
+    type: int
+    required: true
+  qspi-frequency:
+    type: int
+    required: true
+  qspi-quad-mode:
+    type: boolean
+  qspi-rx-delay:
+    type: int
+    default: 0
+  qspi-cpha:
+    type: boolean
+  qspi-cpol:
+    type: boolean
