@@ -25,10 +25,11 @@
  * data_buf must point directly to payload — no manual framing needed.
  *
  * QUAD I/O support:
- *  - Bulk read uses MSPI_IO_MODE_QUAD_1_1_4 (cmd 0x6B): instruction+address
- *    on 1 line, data on 4 lines.  Requires a patch to mspi_stm32_ospi.c —
- *    see 0001-mspi-stm32-add-quad-1-1-4-and-1-4-4-io-modes.patch.
- *  - Bulk write uses MSPI_IO_MODE_QUAD_1_1_4 (cmd 0x32 QPP-Quad).
+ *  - Bulk read uses MSPI_IO_MODE_QUAD_1_4_4 (cmd 0xEB Fast Read Quad I/O):
+ *    instruction on 1 line, address+data on 4 lines, mode byte 0xA0 (2 clocks
+ *    AlternateBytes) + 8 DummyCycles = 10 total (matches nRF52 RDC4IO=10).
+ *    AlternateBytes are injected in mspi_stm32_ospi_access() for QUAD_1_4_4 RX.
+ *  - Bulk write uses MSPI_IO_MODE_QUAD_1_4_4 (cmd 0x38 PP4IO-Quad).
  *  - Register commands (RDSR1/2, WRSR2) always switch temporarily to
  *    MSPI_IO_MODE_SINGLE — nRF7002 only accepts them on 1 line.
  */
@@ -109,10 +110,9 @@ struct device qspi_perip = {
 #define NRF7002_CMD_RDSR2   0x2FU  /* Read Status Register 2 */
 #define NRF7002_CMD_WRSR2   0x3FU  /* Write Status Register 2 */
 #define NRF7002_CMD_READ    0x0BU  /* Fast Read          (1-1-1, 8 dummy clocks) */
-#define NRF7002_CMD_READ4IO 0xEBU  /* Fast Read Quad I/O (1-4-4, 6 dummy clocks) */
-#define NRF7002_CMD_READ4O  0x6BU  /* Fast Read Quad Out (1-1-4, 8 dummy clocks) */
+#define NRF7002_CMD_READ4IO 0xEBU  /* Fast Read Quad I/O (1-4-4, 2+8=10 total clocks) */
 #define NRF7002_CMD_PP      0x02U  /* Page Program       (1-1-1) */
-#define NRF7002_CMD_PP4O    0x32U  /* Page Program Quad Out (1-1-4) */
+#define NRF7002_CMD_PP4IO   0x38U  /* Page Program Quad I/O (1-4-4) */
 
 #define NRF7002_WAKEUP_FREQ MHZ(8) /* max freq for WRSR2 wake-up command */
 
@@ -139,8 +139,8 @@ static struct mspi_dev_cfg nrf7002_dev_cfg = {
 	.dqs_enable  = false,
 	.rx_dummy    = 0,
 	.tx_dummy    = 0,
-	.read_cmd    = NRF7002_CMD_READ,
-	.write_cmd   = NRF7002_CMD_PP,
+	.read_cmd    = NRF7002_CMD_READ,   /* overridden in qspi_init() */
+	.write_cmd   = NRF7002_CMD_PP,    /* overridden in qspi_init() */
 	.cmd_length  = 1,
 	.addr_length = 3, /* 24-bit */
 };
@@ -327,12 +327,15 @@ int qspi_read(unsigned int addr, void *data, int len)
 	};
 
 	/*
-	 * Dummy cycles between address and data phases:
-	 *  0x0B (1-1-1): 8 dummy clocks
-	 *  0x6B (1-1-4): 8 dummy clocks
-	 *  0xEB (1-4-4): 6 dummy clocks (2 dummy + 4 mode bits consumed by chip)
+	 * DummyCycles for the STM32 OSPI command (counts cycles AFTER any
+	 * AlternateBytes phase):
+	 *
+	 * 0x0B (1-1-1): 8 dummy clocks (no AlternateBytes)  — total = 8
+	 * 0xEB (1-4-4): AlternateBytes=0xA0 (2 clocks) + 8 DummyCycles = 10
+	 *               This matches nRF52/53 QSPI IFTIMING.RDC4IO = 10.
+	 *               AlternateBytes are inserted by mspi_stm32_ospi_access().
 	 */
-	uint8_t rx_dummy = (nrf7002_dev_cfg.read_cmd == NRF7002_CMD_READ4IO) ? 6U : 8U;
+	uint8_t rx_dummy = 8U;
 
 	struct mspi_xfer xfer = {
 		.xfer_mode   = MSPI_PIO,
@@ -373,9 +376,15 @@ int qspi_hl_readw(unsigned int addr, void *data)
 	uint32_t result = 0;
 
 	/*
-	 * nRF7002 slave_latency encodes the full dummy cycle count including
-	 * protocol turnaround — do not add a base offset on top of it.
-	 * qspi_read() (PKTRAM, latency=0) uses rx_dummy=8 separately.
+	 * DummyCycles for high-latency reads (non-PKTRAM memory blocks).
+	 *
+	 * slave_latency × 8 = DummyCycles to insert after the address (or after
+	 * the AlternateBytes phase for READ4IO).  This matches the nRF52/53 QSPI
+	 * IFTIMING.RDC4IO = 10 convention for latency=1:
+	 *   AlternateBytes(2 clocks) + DummyCycles(8) = 10 = RDC4IO
+	 *
+	 * For latency=2: DummyCycles=16, total=18.  For SINGLE mode (0x0B) with
+	 * no AlternateBytes: DummyCycles = 8 per latency level.
 	 */
 	uint8_t dummy = qspi_cfg->qspi_slave_latency * 8U;
 
@@ -603,17 +612,34 @@ int qspi_init(struct qspi_config *config)
 	 * Fall back to SINGLE if quad_spi is not requested.
 	 */
 	/*
-	 * QUAD I/O status: nRF7002 supports only 0xEB (1-4-4) with AlternateBytes=0xA0.
-	 * 0x6B (1-1-4) is not supported.  AlternateBytes requires a deeper patch to
-	 * mspi_stm32_ospi_access() which is pending.  Use SPI (1-1-1) for now.
+	 * Select QUAD or SPI mode based on the qspi-quad-mode DTS property.
 	 *
-	 * TODO: re-enable QUAD once mspi_stm32_ospi_access supports AlternateBytes
-	 * for MSPI_IO_MODE_QUAD_1_4_4 (0xEB + 0xA0 mode byte on 4 lines).
+	 * QUAD uses MSPI_IO_MODE_QUAD_1_4_4 (1-4-4):
+	 *   - Instruction on 1 line
+	 *   - Address on 4 lines
+	 *   - Data on 4 lines
+	 *
+	 * Read:  0xEB Fast Read Quad I/O — requires AlternateBytes=0xA0 (mode
+	 *        byte, 2 clock cycles on 4 lines) + 8 dummy cycles = 10 total.
+	 *        AlternateBytes are injected by mspi_stm32_ospi_access() for
+	 *        MSPI_IO_MODE_QUAD_1_4_4 RX transfers.
+	 *        This matches the nRF52/53 QSPI peripheral (RDC4IO = 10).
+	 *
+	 * Write: 0x38 Page Program Quad I/O — address on 4 lines, no dummy,
+	 *        no AlternateBytes.
+	 *
+	 * Register commands (RDSR1/RDSR2/WRSR2) always run in 1-1-1 via
+	 * qspi_send_cmd() which temporarily overrides io_mode to SINGLE.
 	 */
-	nrf7002_dev_cfg.io_mode   = MSPI_IO_MODE_SINGLE;
-	nrf7002_dev_cfg.read_cmd  = NRF7002_CMD_READ;
-	nrf7002_dev_cfg.write_cmd = NRF7002_CMD_PP;
-	ARG_UNUSED(config->quad_spi);
+	if (config->quad_spi) {
+		nrf7002_dev_cfg.io_mode   = MSPI_IO_MODE_QUAD_1_4_4;
+		nrf7002_dev_cfg.read_cmd  = NRF7002_CMD_READ4IO; /* 0xEB, 1-4-4 */
+		nrf7002_dev_cfg.write_cmd = NRF7002_CMD_PP4IO;   /* 0x38, 1-4-4 */
+	} else {
+		nrf7002_dev_cfg.io_mode   = MSPI_IO_MODE_SINGLE;
+		nrf7002_dev_cfg.read_cmd  = NRF7002_CMD_READ;    /* 0x0B */
+		nrf7002_dev_cfg.write_cmd = NRF7002_CMD_PP;      /* 0x02 */
+	}
 
 	/*
 	 * Slave latency → rx_dummy conversion for STM32 OSPI:

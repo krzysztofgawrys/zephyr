@@ -121,6 +121,18 @@ static OSPI_RegularCmdTypeDef mspi_stm32_ospi_prepare_cmd(uint8_t cfg_mode, uint
 		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
 		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
 		break;
+	case MSPI_IO_MODE_QUAD_1_4_4:
+		/* cmd on 1 line, address+data on 4 lines (e.g. 0xEB Fast Read Quad I/O) */
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_4_LINES;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
+	case MSPI_IO_MODE_QUAD_1_1_4:
+		/* cmd+address on 1 line, data on 4 lines (e.g. 0x6B Fast Read Quad Output) */
+		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_1_LINE;
+		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_1_LINE;
+		cmd_tmp.DataMode = HAL_OSPI_DATA_4_LINES;
+		break;
 	case MSPI_IO_MODE_DUAL:
 		cmd_tmp.InstructionMode = HAL_OSPI_INSTRUCTION_2_LINES;
 		cmd_tmp.AddressMode = HAL_OSPI_ADDRESS_2_LINES;
@@ -350,6 +362,30 @@ static int mspi_stm32_ospi_access(const struct device *dev, const struct mspi_xf
 
 	if ((cmd.Instruction == MSPI_NOR_CMD_WREN) || (cmd.Instruction == MSPI_NOR_OCMD_WREN)) {
 		cmd.AddressMode = HAL_OSPI_ADDRESS_NONE;
+	}
+
+	/*
+	 * Fast Read Quad I/O (0xEB, MSPI_IO_MODE_QUAD_1_4_4) requires a mode
+	 * byte (AlternateBytes = 0xA0) on 4 lines between the address and dummy
+	 * phases.  The nRF52/53 QSPI peripheral inserts this automatically
+	 * (hardwired to 0xA0); STM32 OSPI needs explicit configuration.
+	 *
+	 * 0xA0 = non-continuous read mode: the slave expects a new command opcode
+	 * on the next transaction (M[5:4] != 0b10 → standard read mode).
+	 *
+	 * AlternateBytes phase: 8 bits on 4 lines = 2 clock cycles.
+	 * DummyCycles: set by xfer.rx_dummy (counts cycles AFTER AlternateBytes).
+	 * Total between address and data = 2 + rx_dummy clocks.
+	 *
+	 * This only applies to read transfers; writes (PP4IO 0x38) have no
+	 * AlternateBytes phase.
+	 */
+	if (dev_data->dev_cfg.io_mode == MSPI_IO_MODE_QUAD_1_4_4 &&
+	    packet->dir == MSPI_RX) {
+		cmd.AlternateBytesMode = HAL_OSPI_ALTERNATE_BYTES_4_LINES;
+		cmd.AlternateBytesSize = HAL_OSPI_ALTERNATE_BYTES_8_BITS;
+		cmd.AlternateBytes = 0xA0U;
+		cmd.AlternateBytesDtrMode = HAL_OSPI_ALTERNATE_BYTES_DTR_DISABLE;
 	}
 
 	LOG_DBG("MSPI access Instruction 0x%x", cmd.Instruction);
@@ -795,7 +831,13 @@ static int mspi_stm32_ospi_config_mem(const struct device *dev, uint8_t cfg_mode
 	struct mspi_stm32_data *dev_data = dev->data;
 	uint8_t reg[2];
 
-	if ((cfg_mode == MSPI_IO_MODE_SINGLE) && (cfg_rate == MSPI_DATA_RATE_SINGLE)) {
+	/*
+	 * Configuration Register 2 programming (WREN + CFGR2 write) is only
+	 * required for OCTAL NOR flash chips that need to be switched into OPI
+	 * mode.  All other modes (SINGLE, DUAL, QUAD_1_1_4, QUAD_1_4_4, QUAD)
+	 * are either the default power-on state or handled by the device itself.
+	 */
+	if (cfg_mode != MSPI_IO_MODE_OCTAL) {
 		return 0;
 	}
 
