@@ -1,0 +1,53 @@
+# ESP Hosted WiFi driver options
+
+# Copyright (c) 2026 Krzysztof Gawrys
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig WIFI_ESP_HOSTED_SDIO
+	bool "ESP_HOSTED_SDIO driver support"
+	default y
+	select GPIO
+	select PINCTRL
+	select NANOPB
+	select NANOPB_ENABLE_MALLOC
+	select WIFI_OFFLOAD
+	select WIFI_NM
+	select NET_L2_ETHERNET
+	select NET_L2_WIFI_MGMT
+	select WIFI_USE_NATIVE_NETWORKING
+	config SDHC_BUFFER_ALIGNMENT
+		default 32
+	config SD_CMD_TIMEOUT
+		default 1000
+
+
+config WIFI_ESP_HOSTED_SDIO_INIT_PRIORITY
+	int "ESP-Hosted-SDIO init priority"
+	default 90
+	help
+	  Device initialization priority. Must be greater than
+	  SDHC_INIT_PRIORITY (default 85) so that the SDHC host
+	  is ready before this driver starts.
+
+config WIFI_ESP_HOSTED_SDIO_DEBUG
+        bool "Extra debugging messages"
+
+config WIFI_ESP_HOSTED_SDIO_EVENT_TASK_PRIORITY
+        int "Event task priority"
+        default 4
+
+config WIFI_ESP_HOSTED_SDIO_EVENT_TASK_STACK_SIZE
+        int "Event task stack size"
+        default 16384
+
+config WIFI_ESP_HOSTED_SDIO_EVENT_TASK_POLL_MS
+        int "Event task poll rate in ms"
+        default 20
+
+config WIFI_ESP_HOSTED_SDIO_AP_CLIENTS_MAX
+        int "Max number of AP clients"
+        default 5
+
+config WIFI_ESP_HOSTED_SDIO_AP_CHANNEL_DEF
+        int "Default AP channel"
+        default 9

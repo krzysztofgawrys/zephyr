@@ -1,0 +1,13 @@
+description: ESP-hosted over SDIO/SDMMC
+
+compatible: "kg,esp-hosted-sdio"
+on-bus: sd
+include: [base.yaml]
+
+properties:
+  reset-gpios:
+    type: phandle-array
+    required: false
+
+  reg:
+    required: true
