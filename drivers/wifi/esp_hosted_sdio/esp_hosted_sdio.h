@@ -227,9 +227,13 @@ struct esp_hosted_sdio_data {
 	struct k_sem    rpc_resp_sem;  /* rx_thread signals response arrival */
 	Rpc            *rpc_resp_ptr;  /* pointer to caller's response buffer */
 	/* net_if / WiFi mgmt (Stage 3) */
-	struct net_if  *iface;
-	uint8_t         mac_addr[6];
-	int             state;         /* enum wifi_iface_state */
+	struct net_if       *iface;
+	uint8_t              mac_addr[6];
+	int                  state;        /* enum wifi_iface_state */
+	/* Scan state — non-blocking */
+	scan_result_cb_t     scan_cb;
+	const struct device *scan_dev;
+	struct k_work        scan_done_work;
 	/* TX scratch buffer — NOT .nocache (HAL copies to DMA internally) */
 	uint8_t tx_buf[ESP_TX_BUFFER_SIZE] __aligned(32);
 	/* CMD53 IO scratch buffer — same constraint */

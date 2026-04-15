@@ -112,7 +112,7 @@ int esp_hosted_get_mac(const struct device *dev)
 		}
 		return 0;
 	}
-	LOG_WRN("GetMACAddress: unexpected mac len=%zu", mac_len);
+	LOG_DBG("GetMACAddress: unexpected mac len=%zu", mac_len);
 
 fallback:
 	/* Locally-administered default MAC */
@@ -179,6 +179,15 @@ void esp_hosted_process_serial_event(const struct device *dev,
 	}
 
 	switch (evt.msg_id) {
+	case RpcId_Event_StaScanDone:
+		LOG_INF("StaScanDone event (status=%d, n=%d)",
+			evt.payload.event_sta_scan_done.scan_done.status,
+			evt.payload.event_sta_scan_done.scan_done.number);
+		if (data->scan_cb) {
+			k_work_submit(&data->scan_done_work);
+		}
+		break;
+
 	case RpcId_Event_StaConnected:
 		LOG_INF("StaConnected event");
 		data->state = WIFI_STATE_COMPLETED;
@@ -201,6 +210,10 @@ void esp_hosted_process_serial_event(const struct device *dev,
 
 /* ── net_if iface init ───────────────────────────────────────────────────── */
 
+static void scan_done_work_fn(struct k_work *work);
+static bool decode_ap_record_cb(pb_istream_t *stream, const pb_field_t *field,
+				void **arg);
+
 static void esp_hosted_iface_init(struct net_if *iface)
 {
 	const struct device *dev = net_if_get_device(iface);
@@ -208,8 +221,10 @@ static void esp_hosted_iface_init(struct net_if *iface)
 	struct ethernet_context *eth_ctx = net_if_l2_data(iface);
 	struct wifi_nm_instance *nm = wifi_nm_get_instance("esp_nm");
 
-	data->iface = iface;
-	data->state = WIFI_STATE_DISCONNECTED;
+	data->iface    = iface;
+	data->state    = WIFI_STATE_DISCONNECTED;
+	data->scan_dev = dev;
+	k_work_init(&data->scan_done_work, scan_done_work_fn);
 
 	eth_ctx->eth_if_type = L2_ETH_IF_TYPE_WIFI;
 
@@ -267,6 +282,44 @@ struct scan_ctx {
 	struct net_if   *iface;
 	scan_result_cb_t cb;
 };
+
+/* Called from system work queue — safe to call esp_hosted_sdio_rpc_call */
+static void scan_done_work_fn(struct k_work *work)
+{
+	struct esp_hosted_sdio_data *data =
+		CONTAINER_OF(work, struct esp_hosted_sdio_data, scan_done_work);
+	const struct device *dev = data->scan_dev;
+	scan_result_cb_t cb = data->scan_cb;
+	struct net_if *iface = data->iface;
+	Rpc req = Rpc_init_zero;
+	Rpc resp = Rpc_init_zero;
+	int ret;
+
+	if (!cb) {
+		return;
+	}
+
+	req.msg_type      = RpcType_Req;
+	req.msg_id        = RpcId_Req_WifiScanGetApRecords;
+	req.which_payload = Rpc_req_wifi_scan_get_ap_records_tag;
+	req.payload.req_wifi_scan_get_ap_records.number = 20;
+
+	struct scan_ctx sctx = { .iface = iface, .cb = cb };
+
+	resp.which_payload = Rpc_resp_wifi_scan_get_ap_records_tag;
+	resp.payload.resp_wifi_scan_get_ap_records.ap_records.funcs.decode =
+		decode_ap_record_cb;
+	resp.payload.resp_wifi_scan_get_ap_records.ap_records.arg = &sctx;
+
+	ret = esp_hosted_sdio_rpc_call(dev, &req, &resp, K_MSEC(5000));
+	if (ret) {
+		LOG_ERR("WifiScanGetApRecords RPC failed: %d", ret);
+	}
+
+	data->scan_cb = NULL;
+	cb(iface, 0, NULL); /* end-of-scan sentinel */
+	k_yield();
+}
 
 static bool decode_ap_ssid_cb(pb_istream_t *stream, const pb_field_t *field,
 			      void **arg)
@@ -330,6 +383,7 @@ static bool decode_ap_record_cb(pb_istream_t *stream, const pb_field_t *field,
 	result.security = authmode_to_security(rec.authmode);
 
 	ctx->cb(ctx->iface, 0, &result);
+	k_yield();
 	return true;
 }
 
@@ -337,14 +391,15 @@ static int esp_hosted_scan(const struct device *dev,
 			   struct wifi_scan_params *params,
 			   scan_result_cb_t cb)
 {
-	struct net_if *iface = net_if_lookup_by_dev(dev);
+	struct esp_hosted_sdio_data *data = dev->data;
 	Rpc req = Rpc_init_zero;
 	Rpc resp = Rpc_init_zero;
 	int ret;
 
 	ARG_UNUSED(params);
 
-	/* Step 1: WifiScanStart */
+	data->scan_cb = cb;
+
 	req.msg_type      = RpcType_Req;
 	req.msg_id        = RpcId_Req_WifiScanStart;
 	req.which_payload = Rpc_req_wifi_scan_start_tag;
@@ -352,35 +407,12 @@ static int esp_hosted_scan(const struct device *dev,
 	ret = esp_hosted_sdio_rpc_call(dev, &req, &resp, K_MSEC(5000));
 	if (ret) {
 		LOG_ERR("WifiScanStart RPC failed: %d", ret);
+		data->scan_cb = NULL;
 		return ret;
 	}
 
-	/* Wait for scan to finish */
-	k_msleep(3000);
-
-	/* Step 2: WifiScanGetApRecords */
-	memset(&req,  0, sizeof(req));
-	memset(&resp, 0, sizeof(resp));
-
-	req.msg_type      = RpcType_Req;
-	req.msg_id        = RpcId_Req_WifiScanGetApRecords;
-	req.which_payload = Rpc_req_wifi_scan_get_ap_records_tag;
-	req.payload.req_wifi_scan_get_ap_records.number = 20;
-
-	struct scan_ctx sctx = { .iface = iface, .cb = cb };
-
-	resp.which_payload = Rpc_resp_wifi_scan_get_ap_records_tag;
-	resp.payload.resp_wifi_scan_get_ap_records.ap_records.funcs.decode =
-		decode_ap_record_cb;
-	resp.payload.resp_wifi_scan_get_ap_records.ap_records.arg = &sctx;
-
-	ret = esp_hosted_sdio_rpc_call(dev, &req, &resp, K_MSEC(5000));
-	if (ret) {
-		LOG_ERR("WifiScanGetApRecords RPC failed: %d", ret);
-		return ret;
-	}
-
-	cb(iface, 0, NULL); /* end-of-scan sentinel */
+	/* Non-blocking: results delivered when StaScanDone event arrives */
+	LOG_INF("scan started");
 	return 0;
 }
 

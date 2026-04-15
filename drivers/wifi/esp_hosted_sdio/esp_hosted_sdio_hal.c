@@ -434,9 +434,9 @@ static void esp_sdio_irq_cb(const struct device *sdhc, int reason,
 	struct esp_hosted_sdio_data *data = dev->data;
 
 	ARG_UNUSED(sdhc);
-	ARG_UNUSED(reason);
 
-	k_sem_give(&data->irq_sem);
+	if (reason & SDHC_INT_SDIO)
+		k_sem_give(&data->irq_sem);
 }
 
 /* ── RX thread ──────────────────────────────────────────────────────────── */
@@ -611,12 +611,19 @@ static void init_thread_fn(void *a, void *b, void *c)
 
 	/* 13. GetMACAddress — retry: WifiStart on slave is async, the WiFi
 	 *     stack may not be ready immediately after the RPC response. */
-	for (int attempt = 0; attempt < 5; attempt++) {
-		k_msleep(200);
-		if (esp_hosted_get_mac(dev) == 0) {
-			break;
+	{
+		int attempt;
+
+		for (attempt = 0; attempt < 5; attempt++) {
+			k_msleep(200);
+			if (esp_hosted_get_mac(dev) == 0) {
+				break;
+			}
+			LOG_DBG("GetMACAddress not ready, retry %d/5", attempt + 1);
 		}
-		LOG_WRN("GetMACAddress retry %d/5", attempt + 1);
+		if (attempt == 5) {
+			LOG_WRN("GetMACAddress failed after 5 retries, using fallback MAC");
+		}
 	}
 
 	LOG_INF("esp_hosted_sdio: init complete, rx_thread started");
